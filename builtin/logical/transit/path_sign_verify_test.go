@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/crypto/ed25519"
 
+	"github.com/hashicorp/vault/helper/keysutil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/mitchellh/mapstructure"
 )
@@ -338,7 +339,7 @@ func TestTransit_SignVerify_ED25519(t *testing.T) {
 				t.Fatal(err)
 			}
 			val := keyReadResp.Data["keys"].(map[string]map[string]interface{})[strings.TrimPrefix(splitSig[1], "v")]
-			var ak asymKey
+			var ak keysutil.AsymKey
 			if err := mapstructure.Decode(val, &ak); err != nil {
 				t.Fatal(err)
 			}

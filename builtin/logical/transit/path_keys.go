@@ -1,17 +1,9 @@
 package transit
 
 import (
-	"crypto/elliptic"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"fmt"
-	"strconv"
-	"time"
 
-	"golang.org/x/crypto/ed25519"
-
-	"github.com/fatih/structs"
 	"github.com/hashicorp/vault/helper/keysutil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -162,13 +154,6 @@ func (b *backend) pathPolicyWrite(
 	return nil, nil
 }
 
-// Built-in helper type for returning asymmetric keys
-type asymKey struct {
-	Name         string    `json:"name" structs:"name" mapstructure:"name"`
-	PublicKey    string    `json:"public_key" structs:"public_key" mapstructure:"public_key"`
-	CreationTime time.Time `json:"creation_time" structs:"creation_time" mapstructure:"creation_time"`
-}
-
 func (b *backend) pathPolicyRead(
 	req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	name := d.Get("name").(string)
@@ -184,38 +169,6 @@ func (b *backend) pathPolicyRead(
 		return nil, nil
 	}
 
-	// Return the response
-	resp := &logical.Response{
-		Data: map[string]interface{}{
-			"name":                   p.Name,
-			"type":                   p.Type.String(),
-			"derived":                p.Derived,
-			"deletion_allowed":       p.DeletionAllowed,
-			"min_decryption_version": p.MinDecryptionVersion,
-			"min_encryption_version": p.MinEncryptionVersion,
-			"latest_version":         p.LatestVersion,
-			"exportable":             p.Exportable,
-			"supports_encryption":    p.Type.EncryptionSupported(),
-			"supports_decryption":    p.Type.DecryptionSupported(),
-			"supports_signing":       p.Type.SigningSupported(),
-			"supports_derivation":    p.Type.DerivationSupported(),
-		},
-	}
-
-	if p.Derived {
-		switch p.KDF {
-		case keysutil.Kdf_hmac_sha256_counter:
-			resp.Data["kdf"] = "hmac-sha256-counter"
-			resp.Data["kdf_mode"] = "hmac-sha256-counter"
-		case keysutil.Kdf_hkdf_sha256:
-			resp.Data["kdf"] = "hkdf_sha256"
-		}
-		resp.Data["convergent_encryption"] = p.ConvergentEncryption
-		if p.ConvergentEncryption {
-			resp.Data["convergent_encryption_version"] = p.ConvergentVersion
-		}
-	}
-
 	contextRaw := d.Get("context").(string)
 	var context []byte
 	if len(contextRaw) != 0 {
@@ -225,71 +178,14 @@ func (b *backend) pathPolicyRead(
 		}
 	}
 
-	switch p.Type {
-	case keysutil.KeyType_AES256_GCM96:
-		retKeys := map[string]int64{}
-		for k, v := range p.Keys {
-			retKeys[strconv.Itoa(k)] = v.DeprecatedCreationTime
-		}
-		resp.Data["keys"] = retKeys
-
-	case keysutil.KeyType_ECDSA_P256, keysutil.KeyType_ED25519, keysutil.KeyType_RSA2048, keysutil.KeyType_RSA4096:
-		retKeys := map[string]map[string]interface{}{}
-		for k, v := range p.Keys {
-			key := asymKey{
-				PublicKey:    v.FormattedPublicKey,
-				CreationTime: v.CreationTime,
-			}
-			if key.CreationTime.IsZero() {
-				key.CreationTime = time.Unix(v.DeprecatedCreationTime, 0)
-			}
-
-			switch p.Type {
-			case keysutil.KeyType_ECDSA_P256:
-				key.Name = elliptic.P256().Params().Name
-			case keysutil.KeyType_ED25519:
-				if p.Derived {
-					if len(context) == 0 {
-						key.PublicKey = ""
-					} else {
-						derived, err := p.DeriveKey(context, k)
-						if err != nil {
-							return nil, fmt.Errorf("failed to derive key to return public component")
-						}
-						pubKey := ed25519.PrivateKey(derived).Public().(ed25519.PublicKey)
-						key.PublicKey = base64.StdEncoding.EncodeToString(pubKey)
-					}
-				}
-				key.Name = "ed25519"
-			case keysutil.KeyType_RSA2048, keysutil.KeyType_RSA4096:
-				key.Name = "rsa-2048"
-				if p.Type == keysutil.KeyType_RSA4096 {
-					key.Name = "rsa-4096"
-				}
-
-				// Encode the RSA public key in PEM format to return over the
-				// API
-				derBytes, err := x509.MarshalPKIXPublicKey(v.RSAKey.Public())
-				if err != nil {
-					return nil, fmt.Errorf("error marshaling RSA public key: %v", err)
-				}
-				pemBlock := &pem.Block{
-					Type:  "PUBLIC KEY",
-					Bytes: derBytes,
-				}
-				pemBytes := pem.EncodeToMemory(pemBlock)
-				if pemBytes == nil || len(pemBytes) == 0 {
-					return nil, fmt.Errorf("failed to PEM-encode RSA public key")
-				}
-				key.PublicKey = string(pemBytes)
-			}
-
-			retKeys[strconv.Itoa(k)] = structs.New(key).Map()
-		}
-		resp.Data["keys"] = retKeys
+	respData, err := p.Map(context)
+	if err != nil {
+		return nil, err
 	}
 
-	return resp, nil
+	return &logical.Response{
+		Data: respData,
+	}, nil
 }
 
 func (b *backend) pathPolicyDelete(

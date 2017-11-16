@@ -339,7 +339,7 @@ func TestTransit_SignVerify_ED25519(t *testing.T) {
 				t.Fatal(err)
 			}
 			val := keyReadResp.Data["keys"].(map[string]map[string]interface{})[strings.TrimPrefix(splitSig[1], "v")]
-			var ak keysutil.AsymKey
+			var ak keysutil.KeyInfo
 			if err := mapstructure.Decode(val, &ak); err != nil {
 				t.Fatal(err)
 			}

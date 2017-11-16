@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -52,11 +53,24 @@ const (
 
 const ErrTooOld = "ciphertext or signature version is disallowed by policy (too old)"
 
-// Built-in helper type for returning asymmetric keys
-type AsymKey struct {
-	Name         string    `json:"name" structs:"name" mapstructure:"name"`
-	PublicKey    string    `json:"public_key" structs:"public_key" mapstructure:"public_key"`
+// Built-in helper type for returning keys
+type KeyInfo struct {
+	Name string `json:"name" structs:"name" mapstructure:"name"`
+
+	// PublicKey will be set if the key returned is an asymmetric key
+	PublicKey string `json:"public_key,omitempty" structs:"public_key,omitempty" mapstructure:"public_key"`
+
+	// PrivateKey will be set if the key returned is an asymmetric key
+	PrivateKey string `json:"private_key,omitempty" structs:"private_key,omitempty" mapstructure:"private_key"`
+
+	// CreationTime is the time at which the key was created
 	CreationTime time.Time `json:"creation_time" structs:"creation_time" mapstructure:"creation_time"`
+
+	// HMACKey of the key
+	HMACKey string `json:"hmac_key,omitempty" structs:"hmac_key,omitempty" mapstructure:"hmac_key"`
+
+	// Key will be set if the key returned is a symmetric key
+	Key string `json:"key,omitempty" structs:"key,omitempty" mapstructure:"key"`
 }
 
 type SigningResult struct {
@@ -1031,7 +1045,7 @@ func (p *Policy) MigrateKeyToKeysMap() {
 	p.Key = nil
 }
 
-func (p *Policy) Map(context []byte) (map[string]interface{}, error) {
+func (p *Policy) Map(context []byte, export bool) (map[string]interface{}, error) {
 	if p == nil {
 		return nil, nil
 	}
@@ -1067,16 +1081,34 @@ func (p *Policy) Map(context []byte) (map[string]interface{}, error) {
 
 	switch p.Type {
 	case KeyType_AES256_GCM96:
-		retKeys := map[string]int64{}
-		for k, v := range p.Keys {
-			retKeys[strconv.Itoa(k)] = v.DeprecatedCreationTime
+		switch export {
+		case true:
+			retKeys := map[string]map[string]interface{}{}
+			for k, v := range p.Keys {
+				key := KeyInfo{
+					Name:         "aes256-gcm96",
+					CreationTime: v.CreationTime,
+					HMACKey:      strings.TrimSpace(base64.StdEncoding.EncodeToString(v.HMACKey)),
+					Key:          strings.TrimSpace(base64.StdEncoding.EncodeToString(v.Key)),
+				}
+				if key.CreationTime.IsZero() {
+					key.CreationTime = time.Unix(v.DeprecatedCreationTime, 0)
+				}
+				retKeys[strconv.Itoa(k)] = structs.New(key).Map()
+			}
+
+		default:
+			retKeys := map[string]int64{}
+			for k, v := range p.Keys {
+				retKeys[strconv.Itoa(k)] = v.DeprecatedCreationTime
+			}
+			result["keys"] = retKeys
 		}
-		result["keys"] = retKeys
 
 	case KeyType_ECDSA_P256, KeyType_ED25519, KeyType_RSA2048, KeyType_RSA4096:
 		retKeys := map[string]map[string]interface{}{}
 		for k, v := range p.Keys {
-			key := AsymKey{
+			key := KeyInfo{
 				PublicKey:    v.FormattedPublicKey,
 				CreationTime: v.CreationTime,
 			}
@@ -1084,9 +1116,20 @@ func (p *Policy) Map(context []byte) (map[string]interface{}, error) {
 				key.CreationTime = time.Unix(v.DeprecatedCreationTime, 0)
 			}
 
+			if export {
+				key.HMACKey = strings.TrimSpace(base64.StdEncoding.EncodeToString(v.HMACKey))
+			}
+
 			switch p.Type {
 			case KeyType_ECDSA_P256:
 				key.Name = elliptic.P256().Params().Name
+				if export {
+					ecPrivateKey, err := KeyEntryToECPrivateKey(&v, elliptic.P256())
+					if err != nil {
+						return nil, err
+					}
+					key.PrivateKey = ecPrivateKey
+				}
 			case KeyType_ED25519:
 				if p.Derived {
 					if len(context) == 0 {
@@ -1101,6 +1144,11 @@ func (p *Policy) Map(context []byte) (map[string]interface{}, error) {
 					}
 				}
 				key.Name = "ed25519"
+
+				if export {
+					key.Key = strings.TrimSpace(base64.StdEncoding.EncodeToString(v.Key))
+				}
+
 			case KeyType_RSA2048, KeyType_RSA4096:
 				key.Name = "rsa-2048"
 				if p.Type == KeyType_RSA4096 {
@@ -1120,6 +1168,10 @@ func (p *Policy) Map(context []byte) (map[string]interface{}, error) {
 					return nil, fmt.Errorf("failed to PEM-encode RSA public key")
 				}
 				key.PublicKey = string(pemBytes)
+
+				if export {
+					key.PrivateKey = EncodeRSAPrivateKey(v.RSAKey)
+				}
 			}
 
 			retKeys[strconv.Itoa(k)] = structs.New(key).Map()
@@ -1128,4 +1180,44 @@ func (p *Policy) Map(context []byte) (map[string]interface{}, error) {
 	}
 
 	return result, nil
+}
+
+func EncodeRSAPrivateKey(key *rsa.PrivateKey) string {
+	// When encoding PKCS1, the PEM header should be `RSA PRIVATE KEY`. When Go
+	// has PKCS8 encoding support, we may want to change this.
+	derBytes := x509.MarshalPKCS1PrivateKey(key)
+	pemBlock := &pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: derBytes,
+	}
+	pemBytes := pem.EncodeToMemory(pemBlock)
+	return string(pemBytes)
+}
+
+func KeyEntryToECPrivateKey(k *KeyEntry, curve elliptic.Curve) (string, error) {
+	if k == nil {
+		return "", errors.New("nil KeyEntry provided")
+	}
+
+	privKey := &ecdsa.PrivateKey{
+		PublicKey: ecdsa.PublicKey{
+			Curve: curve,
+			X:     k.EC_X,
+			Y:     k.EC_Y,
+		},
+		D: k.EC_D,
+	}
+	ecder, err := x509.MarshalECPrivateKey(privKey)
+	if err != nil {
+		return "", err
+	}
+	if ecder == nil {
+		return "", errors.New("No data returned when marshalling to private key")
+	}
+
+	block := pem.Block{
+		Type:  "EC PRIVATE KEY",
+		Bytes: ecder,
+	}
+	return strings.TrimSpace(string(pem.EncodeToMemory(&block))), nil
 }

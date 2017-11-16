@@ -178,7 +178,7 @@ func (b *backend) pathPolicyRead(
 		}
 	}
 
-	respData, err := p.Map(context)
+	respData, err := p.Map(context, false)
 	if err != nil {
 		return nil, err
 	}

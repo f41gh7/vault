@@ -119,29 +119,34 @@ func (kt KeyType) String() string {
 	return "[unknown]"
 }
 
+type KeyData struct {
+	Policy       *Policy       `json:"policy" mapstructure:"policy"`
+	ArchivedKeys *archivedKeys `json:"archived_keys" mapstructure:"archived_keys"`
+}
+
 // KeyEntry stores the key and metadata
 type KeyEntry struct {
 	// AES or some other kind that is a pure byte slice like ED25519
-	Key []byte `json:"key"`
+	Key []byte `json:"key" mapstructure:"key"`
 
 	// Key used for HMAC functions
-	HMACKey []byte `json:"hmac_key"`
+	HMACKey []byte `json:"hmac_key" mapstructure:"hmac_key"`
 
 	// Time of creation
-	CreationTime time.Time `json:"time"`
+	CreationTime time.Time `json:"time" mapstructure:"time"`
 
-	EC_X *big.Int `json:"ec_x"`
-	EC_Y *big.Int `json:"ec_y"`
-	EC_D *big.Int `json:"ec_d"`
+	EC_X *big.Int `json:"ec_x" mapstructure:"ec_x"`
+	EC_Y *big.Int `json:"ec_y" mapstructure:"ec_y"`
+	EC_D *big.Int `json:"ec_d" mapstructure:"ec_d"`
 
-	RSAKey *rsa.PrivateKey `json:"rsa_key"`
+	RSAKey *rsa.PrivateKey `json:"rsa_key" mapstructure:"rsa_key"`
 
 	// The public key in an appropriate format for the type of key
-	FormattedPublicKey string `json:"public_key"`
+	FormattedPublicKey string `json:"public_key" mapstructure:"public_key"`
 
 	// This is deprecated (but still filled) in favor of the value above which
 	// is more precise
-	DeprecatedCreationTime int64 `json:"creation_time"`
+	DeprecatedCreationTime int64 `json:"creation_time" mapstructure:"creation_time"`
 }
 
 // keyEntryMap is used to allow JSON marshal/unmarshal
@@ -175,47 +180,47 @@ func (kem keyEntryMap) UnmarshalJSON(data []byte) error {
 
 // Policy is the struct used to store metadata
 type Policy struct {
-	Name string      `json:"name"`
-	Key  []byte      `json:"key,omitempty"` //DEPRECATED
-	Keys keyEntryMap `json:"keys"`
+	Name string      `json:"name" mapstructure:"name"`
+	Key  []byte      `json:"key,omitempty" mapstructure:"key"` //DEPRECATED
+	Keys keyEntryMap `json:"keys" mapstructure:"keys"`
 
 	// Derived keys MUST provide a context and the master underlying key is
 	// never used. If convergent encryption is true, the context will be used
 	// as the nonce as well.
-	Derived              bool `json:"derived"`
-	KDF                  int  `json:"kdf"`
-	ConvergentEncryption bool `json:"convergent_encryption"`
+	Derived              bool `json:"derived" mapstructure:"derived"`
+	KDF                  int  `json:"kdf" mapstrucute:"kdf"`
+	ConvergentEncryption bool `json:"convergent_encryption" mapstructure:"convergent_encryption"`
 
 	// Whether the key is exportable
-	Exportable bool `json:"exportable"`
+	Exportable bool `json:"exportable" mapstructure:"exportable"`
 
 	// The minimum version of the key allowed to be used for decryption
-	MinDecryptionVersion int `json:"min_decryption_version"`
+	MinDecryptionVersion int `json:"min_decryption_version" mapstructure:"min_decryption_version"`
 
 	// The minimum version of the key allowed to be used for encryption
-	MinEncryptionVersion int `json:"min_encryption_version"`
+	MinEncryptionVersion int `json:"min_encryption_version" mapstructure:"min_encryption_version"`
 
 	// The latest key version in this policy
-	LatestVersion int `json:"latest_version"`
+	LatestVersion int `json:"latest_version" mapstructure:"latest_version"`
 
 	// The latest key version in the archive. We never delete these, so this is
 	// a max.
-	ArchiveVersion int `json:"archive_version"`
+	ArchiveVersion int `json:"archive_version" mapstructure:"archive_version"`
 
 	// Whether the key is allowed to be deleted
-	DeletionAllowed bool `json:"deletion_allowed"`
+	DeletionAllowed bool `json:"deletion_allowed" mapstructure:"deletion_allowed"`
 
 	// The version of the convergent nonce to use
-	ConvergentVersion int `json:"convergent_version"`
+	ConvergentVersion int `json:"convergent_version" mapstructure:"convergent_version"`
 
 	// The type of key
-	Type KeyType `json:"type"`
+	Type KeyType `json:"type" mapstructure:"type"`
 }
 
 // ArchivedKeys stores old keys. This is used to keep the key loading time sane
 // when there are huge numbers of rotations.
 type archivedKeys struct {
-	Keys []KeyEntry `json:"keys"`
+	Keys []KeyEntry `json:"keys" mapstructure:"keys"`
 }
 
 func (p *Policy) LoadArchive(storage logical.Storage) (*archivedKeys, error) {
@@ -1021,4 +1026,16 @@ func (p *Policy) MigrateKeyToKeysMap() {
 		},
 	}
 	p.Key = nil
+}
+
+func (p *Policy) Backup(storage logical.Storage) (*KeyData, error) {
+	archivedKeys, err := p.LoadArchive(storage)
+	if err != nil {
+		return nil, err
+	}
+
+	return &KeyData{
+		Policy:       p,
+		ArchivedKeys: archivedKeys,
+	}, nil
 }
